@@ -1,5 +1,4 @@
 from datetime import time
-
 import torch
 import torchtext
 from torch import nn, optim
@@ -9,13 +8,12 @@ import random
 import math
 import numpy as np
 import torch
-# from LSTMmodel import LSTM
-import matplotlib.pyplot  as plt
-from torch import nn as nn
-from torch import Tensor
-from typing import Tuple
-
+from LSTMmodel import LSTMNet
+from GRUmodel import GRUNet
+import matplotlib.pyplot as plt
+import torch.optim as optim
 import torch.nn as nn
+from transformers import BertTokenizer, BertModel
 MAX_WORD = 10000  # 只保留最高频的10000词
 MAX_LEN = 300     # 句子统一长度为200
 word_count={}     # 词-词出现的词数 词典
@@ -36,77 +34,13 @@ LABEL.build_vocab(train_data)
 
 use_cuda = torch.cuda.is_available()
 device = torch.device("cuda" if use_cuda else "cpu")
-BATCH_SIZE = 32
-N_EPOCHS = 10
+BATCH_SIZE = 64
+N_EPOCHS = 5
 train_iterator, valid_iterator, test_iterator = data.BucketIterator.splits(
     (train_data,valid_data,test_data),
     batch_size=BATCH_SIZE,device=device)
 
-
-# class RNN(nn.Module):
-#     def __init__(self, input_dim, embedding_dim, hidden_dim, output_dim):
-#         super().__init__()
-#         self.embedding = nn.Embedding(input_dim, embedding_dim)
-#         self.rnn = nn.RNN(embedding_dim, hidden_dim)
-#         self.fc = nn.Linear(hidden_dim, output_dim)
-#
-#     def forward(self, text):
-#         # text = [sent len, batch size]
-#         embedded = self.embedding(text)
-#         # embedded = [sent len, batch size, emb dim]
-#         output, hidden = self.rnn(embedded)
-#         # output = [sent len, batch size, hid dim]
-#         # hidden = [1, batch size, hid dim]
-#         assert torch.equal(output[-1, :, :], hidden.squeeze(0))
-#         return self.fc(hidden.squeeze(0))
-#
-# INPUT_DIM = len(TEXT.vocab)
-# EMBEDDING_DIM = 100
-# HIDDEN_DIM = 256
-# OUTPUT_DIM = 1
-#
-# model = RNN(INPUT_DIM, EMBEDDING_DIM, HIDDEN_DIM, OUTPUT_DIM)
-# import torch.optim as optim
-# optimizer=optim.SGD(model.parameters(),lr=1e-3,momentum=0.9)
-# criterion=nn.BCEWithLogitsLoss()#计算二元交叉熵
-# if torch.cuda.is_available():
-#     model = model.cuda()
-# # model=model.to(device)
-# nivicriterion=criterion.to(device)
-
-
-class RNN(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim, n_layers,
-                 bidirectional, dropout, pad_idx):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_idx)
-        self.rnn = nn.LSTM(embedding_dim,
-                           hidden_dim,
-                           num_layers=n_layers,
-                           bidirectional=bidirectional,
-                           dropout=dropout)
-        self.fc = nn.Linear(hidden_dim * 2, output_dim)
-        self.dropout = nn.Dropout(dropout)
-    def forward(self, text, text_lengths):
-        # text = [sent len, batch size]
-        embedded = self.dropout(self.embedding(text))
-        # embedded = [sent len, batch size, emb dim]
-        # pack sequence
-        # lengths need to be on CPU!
-        packed_embedded = nn.utils.rnn.pack_padded_sequence(embedded, text_lengths.to('cpu'))
-        packed_output, (hidden, cell) = self.rnn(packed_embedded)
-        # unpack sequence
-        output, output_lengths = nn.utils.rnn.pad_packed_sequence(packed_output)
-        # output = [sent len, batch size, hid dim * num directions]
-        # output over padding tokens are zero tensors
-        # hidden = [num layers * num directions, batch size, hid dim]
-        # cell = [num layers * num directions, batch size, hid dim]
-        # concat the final forward (hidden[-2,:,:]) and backward (hidden[-1,:,:]) hidden layers
-        # and apply dropout
-        hidden = self.dropout(torch.cat((hidden[-2, :, :], hidden[-1, :, :]), dim=1))
-        # hidden = [batch size, hid dim * num directions]
-        return self.fc(hidden)
-
+# below is LSTMnet
 INPUT_DIM = len(TEXT.vocab)
 EMBEDDING_DIM = 100
 HIDDEN_DIM = 256
@@ -115,32 +49,26 @@ N_LAYERS = 2
 BIDIRECTIONAL = True
 DROPOUT = 0.5
 PAD_IDX = TEXT.vocab.stoi[TEXT.pad_token]
+if torch.cuda.is_available():
+    model = LSTMNet(INPUT_DIM, EMBEDDING_DIM, HIDDEN_DIM, OUTPUT_DIM, N_LAYERS, BIDIRECTIONAL,  DROPOUT, PAD_IDX).cuda()
+    # model = GRUNet(INPUT_DIM, EMBEDDING_DIM, HIDDEN_DIM, OUTPUT_DIM, N_LAYERS, BIDIRECTIONAL,  DROPOUT, PAD_IDX).cuda()
 
-model = RNN(INPUT_DIM,
-            EMBEDDING_DIM,
-            HIDDEN_DIM,
-            OUTPUT_DIM,
-            N_LAYERS,
-            BIDIRECTIONAL,
-            DROPOUT,
-            PAD_IDX)
-
+def count_parameters( model ):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f'The model has {count_parameters(model):,} trainable parameters')
+pretrained_embeddings = TEXT.vocab.vectors
+print(pretrained_embeddings.shape)
+model.embedding.weight.data.copy_(pretrained_embeddings)
 UNK_IDX = TEXT.vocab.stoi[TEXT.unk_token]
-#
 pretrained_embeddings = TEXT.vocab.vectors
 model.embedding.weight.data.copy_(pretrained_embeddings)
-
 model.embedding.weight.data[UNK_IDX] = torch.zeros(EMBEDDING_DIM)
 model.embedding.weight.data[PAD_IDX] = torch.zeros(EMBEDDING_DIM)
-#
 
+optimizer = optim.Adam(model.parameters())
+criterion = nn.BCEWithLogitsLoss()
 
-import torch.optim as optim
-optimizer=optim.SGD(model.parameters(),lr=0.01,momentum=0.9)
-criterion=nn.BCEWithLogitsLoss()#计算二元交叉熵
-if torch.cuda.is_available():
-    model = model.cuda()
-criterion=criterion.to(device)
+criterion = criterion.to(device)
 
 
 def binary_accuracy(preds, y):
@@ -203,7 +131,9 @@ if __name__ == '__main__':
         valacc.append(valid_acc)
         if valid_loss < best_valid_loss:
             best_valid_loss = valid_loss
-            torch.save(model.state_dict(), 'GRU.pth')
+            # torch.save(model.state_dict(), 'GRUmodel.pth')
+            torch.save(model.state_dict(), 'LSTM_32.pth')
+            print("model saved!!!!")
 
     print(trloss)
     print(valloss)
@@ -225,3 +155,8 @@ if __name__ == '__main__':
     plt.legend()
     plt.show()
 
+    model.load_state_dict(torch.load('LSTM_32.pth'))
+    # model.load_state_dict(torch.load('GRUmodel.pth'))
+    test_loss, test_acc = evaluate(model, test_iterator, criterion)
+
+    print(f'Test Loss: {test_loss:.3f} | Test Acc: {test_acc * 100:.2f}%')
